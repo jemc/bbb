@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+
+# Copyright 2015, Joe Eli McIlvain.
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+# Declare some reporting/flow utility functions.
+info()  { echo "bbb: ${@}"; }
+debug() { if [[ ! -z $bbb_debug ]]; then echo "bbb: ! ${@}"; fi; }
+abort() { for l in "${@}"; do echo "bbb: *** ${l}"; done; exit 1; }
+
+# Declare a function that returns the number of elements in the given list.
+bbb-count-list() { echo "${@}" | wc -w; }
+
+# Declare a function that sets or appends to the value $1 with the value $2,
+# separated by a space character.
+bbb-set-or-append() {
+  if [[ -z "${1}" ]]; then
+    echo "${2}"
+  else
+    echo "${1}" "${2}"
+  fi
+}
+
+# Declare a function that sets or appends to the value $1 with the value $2,
+# separated by a newline character.
+bbb-set-or-append_newline() {
+  if [[ -z "${1}" ]]; then
+    echo "${2}"
+  else
+    echo "${1}"$'\n'"${2}"
+  fi
+}
+
+# Declare a function that sets or appends to the value $1 with the value $2.
+bbb-remove-from-set() {
+  result=""
+  
+  for item in ${1}; do
+    if [[ "${item}" != "${2}" ]]; then
+      result=`bbb-set-or-append "${item}"`
+    fi
+  done
+  
+  echo "${result}"
+}
+
+# Declare a function that trims trailing whitespace from the value $1.
+bbb-trim-trailing-space() {
+  echo "${1}" | sed 's/ *$//g'
+}
+
+# Enforce modern BASH_VERSION (with support for associative arrays).
+if [[ ${BASH_VERSION:0:1} -lt '4' ]]; then
+  abort "Your BASH_VERSION is too old: ${BASH_VERSION}" \
+        "  BASH_VERSION >= 4 is required." \
+        "  On Linux, please update via your distro's package manager." \
+        "  On OS X, please update via the brew package manager." \
+        '  Make sure `/usr/bin/env bash --version` invokes the correct version.'
+fi
+
+# Respect the $CWD variable if present.
+if [[ -n $CWD ]]; then
+  cd $CWD
+fi
+
+# Set up some default options.
+bbb_file="build"
+bbb_dir="./"
+bbb_debug=
+
+# Read command line arguments to override default options.
+for arg in ${@}; do
+  case "${arg}" in
+    '--debug')
+      bbb_debug="true";;
+    '-D')
+      bbb_debug="true";;
+    *)
+      bbb_file=`basename "${arg}"`
+      bbb_dir=`dirname "${arg}"`
+  esac
+done
+
+# Show debug mode notice if enabled.
+debug "Showing debugging output"
+
+# Move to the directory containing the bbb_file.
+cd "${bbb_dir}"
+
+# Print the bbb_file and working directory.
+info "Using file '${bbb_file}' in directory '`pwd`'"
+
+# Assert that the bbb_file file exists.
+if [[ ! -f "${bbb_file}" ]]; then
+  abort "No '${bbb_file}' file found."
+fi
+
+# Set up some data structures for variable, rule, and file information.
+# These are associative arrays, and work like key=>value maps.
+declare -A variables     # TODO
+declare -A rule_tributes # (rule name) => (tribute name list)
+declare -A rule_actions  # (rule name) => (actions script, newline separated)
+declare -A rule_patterns # (rule name) => (rule regular expression pattern list)
+declare -A rule_globs    # (rule name) => (rule shell glob pattern list)
+declare -A file_stats    # (file name) => (date modified timestamp or 'new')
+declare -A file_rules    # (file name) => (matching rule name list)
+declare -A file_deps     # (file name) => (file name dependencies list)
+declare -A file_rule_tribute_files # (file name, rule name) => \
+                                   #   (generated/tribute file name list)
+
+# Set up some simple patterns for matching lines.
+pattern_empty='^\s*$'
+pattern_comment='^#'
+pattern_variable='^(\w+)=([^>].*)$'
+pattern_rule='^(\S.*?)\s*=>\s*(.*)$'
+pattern_action='^\s+(\S.*?)'
+
+# Parse each line in the build file according to the patterns.
+while IFS='' read -r line; do
+  # Handle empty lines and comments (ignore them).
+  if [[ "${line}" =~ $pattern_empty ]] || [[ "${line}" =~ $pattern_comment ]]; then
+    : # do nothing
+  
+  # Handle variable set lines (add them to the variable table).
+  elif [[ "${line}" =~ $pattern_variable ]]; then
+    name="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    
+    variables[$name]=$value
+  
+  # Handle rule definition lines (set up table entries for them).
+  elif [[ "${line}" =~ $pattern_rule ]]; then
+    name=`bbb-trim-trailing-space "${BASH_REMATCH[1]}"`
+    tributes=`bbb-trim-trailing-space "${BASH_REMATCH[2]}"`
+    
+    rule_tributes[$name]=$tributes
+    rule_actions[$name]=""
+    current_rule=$name
+  
+  # Handle action lines (add them to the actions list of the current rule).
+  elif [[ "${line}" =~ $pattern_action ]]; then
+    act="${BASH_REMATCH[1]}"
+    
+    rule_actions[$current_rule]=`bbb-set-or-append_newline "${rule_actions[$current_rule]}" "${act}"`
+  
+  # Abort for unrecognizable lines.
+  else
+    abort "Unrecognizable line: ${line}"
+  fi
+done < "build"
+
+# For each rule, calculate a regular expression rule pattern from the name.
+for rule in "${!rule_tributes[@]}"; do
+  pattern=$rule
+  
+  # Escape sed BRE special characters.
+  pattern=`echo "${pattern}" | sed 's~[]\[\$\.\*\\\^]~\\\&~g'`
+  
+  # Expand occurrences of the % character to lazy file-part matchers.
+  pattern=`echo "${pattern}" | sed 's~%~\([^/]*?\)~g'`
+  
+  # Add an initial anchor to the start
+  pattern='^'"${pattern}"
+  
+  rule_patterns[$rule]=$pattern
+done
+
+# For each rule, calculate a glob rule pattern from the name.
+for rule in "${!rule_tributes[@]}"; do
+  glob=$rule
+  
+  # Escape glob special characters.
+  glob=`echo "${glob}" | sed 's~[]\[}{\*\\\?]~\\\&~g'`
+  
+  # Expand occurrences of the % character to lazy file-part matchers.
+  glob=`echo "${glob}" | sed 's~%~*~g'`
+  
+  rule_globs[$rule]=$glob
+done
+
+# Debugging output for parsed/calculated rule data.
+if [[ ! -z $bbb_debug ]]; then
+  debug "0-1) Initial rule table:"
+  for rule in "${!rule_tributes[@]}"; do
+    debug "  rule: ${rule}"
+    debug "    glob:    ${rule_globs[$rule]}"
+    debug "    pattern: ${rule_patterns[$rule]}"
+    debug "    tributes (`bbb-count-list "${rule_tributes[$rule]}"`): ${rule_tributes[$rule]}"
+    debug "    acts: \\"
+    while read -r line; do
+      debug "      ${line}"
+    done <<< "${rule_actions[$rule]}"
+    debug
+  done
+fi
+
+# For each rule glob, detect and take note of existent files.
+for rule in "${!rule_tributes[@]}"; do
+  for file in `eval ls "${rule_globs[$rule]}" 2>/dev/null`; do
+    file_stats[$file]=`stat -c%Y ${file}`
+  done
+done
+
+# First pass - extrapolate from existing files to resolve all possible files.
+debug "1-0) Tribute file extrapolation from existing files:"
+next_files="${!file_stats[@]}"
+until [[ -z "${next_files}" ]]; do
+  files="${next_files}"
+  next_files=""
+  debug "  analyzing (`bbb-count-list "${files}"`): ${files}"
+  
+  for file in $files; do
+    for rule in "${!rule_tributes[@]}"; do
+      if [ ! -z $rule ] && [[ "${file}" =~ ${rule_patterns[$rule]} ]]; then
+        # TODO: generalize this to use multiple captures.
+        capt="${BASH_REMATCH[1]}"
+        
+        # Add this rule to the list of rules for generating from this file.
+        file_rules[$file]=`bbb-set-or-append "${file_rules[$file]}" "${rule}"`
+        
+        for tribute in ${rule_tributes[$rule]}; do
+          # Calculate filename by replacing % tokens with captures.
+          # TODO: generalize this to use multiple captures.
+          # TODO: fix this for the case where $capt contains special chars.
+          tribute_file=`echo "${tribute}" | sed "s/%/${capt}/g"`
+          
+          # Add this tribute_file to the list of tribute_files for this rule.
+          file_rule_tribute_files[$file,$rule]=`bbb-set-or-append "${file_rule_tribute_files[$file,$rule]}" "${tribute_file}"`
+          
+          # Add this file to the list of dependencies of this tribute_file.
+          file_deps[$tribute_file]=`bbb-set-or-append "${file_deps[$tribute_file]}" "${file}"`
+          
+          # Determine if this file is already known to the file_stat table.
+          already_seen=
+          for f in "${!file_stats[@]}"; do
+            if [[ "${f}" == "${tribute_file}" ]]; then
+              already_seen="true"
+            fi
+          done
+          
+          # If not already seen...
+          if [[ -z $already_seen ]]; then
+            # Save the tribute_file's date modified stat, or set to 'new'.
+            file_stats[$tribute_file]=`stat -c%Y ${tribute_file} 2>/dev/null`
+            if [[ -z ${file_stats[$tribute_file]} ]]; then
+              file_stats[$tribute_file]='new'
+            fi
+            
+            # Add this tribute_file to the next_files to look for tributes of.
+            next_files=`bbb-set-or-append "${next_files}" "${tribute_file}"`
+          fi
+          
+          debug "    ${file} (${file_stats[$file]}) => ${tribute_file} (${file_stats[$tribute_file]})"
+        done
+      fi
+    done
+  done
+  debug
+done
+
+# Debugging output for file dependency graph.
+if [[ ! -z $bbb_debug ]]; then
+  debug "1-1) Calculated file graph:"
+  for file in "${!file_stats[@]}"; do
+    debug "  file: ${file} (${file_stats[$file]})"
+    debug "    deps (`bbb-count-list "${file_deps[$file]}"`): ${file_deps[$file]}"
+    if [[ ! -z "${file_rules[$file]}" ]]; then
+      debug "    rules: \\"
+      for rule in "${file_rules[$file]}"; do
+        debug "      ${rule} =>> ${file_rule_tribute_files[$file,$rule]}"
+      done
+    fi
+    debug
+  done
+fi
+
+# Second pass - Process all files in dependency order, performing any actions.
+debug "2-0) File processing:"
+next_files="${!file_stats[@]}"
+until [[ -z "${next_files}" ]]; do
+  files="${next_files}"
+  next_files=""
+  
+  # Process files with no (remaining) dependencies to satisfy.
+  made_progress=
+  for file in $files; do
+    if [[ ! -z ${file_deps[$file]} ]]; then
+      debug "  blocked file: ${file}"
+      debug "    needs (`bbb-count-list "${file_deps[$file]}"`): ${file_deps[$file]}"
+      # This file doesn't have its dependencies satisfied yet - come back later.
+      next_files=`bbb-set-or-append "${next_files}" "${file}"`
+    else
+      debug "  processing file: ${file}"
+      made_progress="true"
+      
+      for rule in "${file_rules[$file]}"; do
+        tribute_files="${file_rule_tribute_files[$file,$rule]}"
+        
+        if [[ ! -z $rule ]] && [[ ! -z ${rule_actions[$rule]} ]]; then
+          # Determine if any action should be taken, based on the existence and
+          # date modified time of the input file and that of its tribute_files.
+          stat="${file_stats[$file]}"
+          need_action=
+          if [[ "${stat}" == 'new' ]]; then
+            need_action="true"
+          else
+            for tribute_file in "${tribute_files}"; do
+              tribute_stat="${file_stats[$tribute_file]}"
+              if [[ "${tribute_stat}" == 'new' ]] || [[ "${tribute_stat}" -lt "${stat}" ]]; then
+                need_action="true"
+                break
+              fi
+            done
+          fi
+          
+          # Run any associated actions to generate/update the tribute_files.
+          if [[ -z $need_action ]]; then
+            info "Skipping ${file} => ${tribute_files}"
+          else
+            info "Running ${file} => ${tribute_files}"
+            
+            while read -r action; do
+              echo "bbb>   ${action}"
+              
+              INPUT="${file}" \
+              OUTPUTS=${tribute_files} \
+                bash -c "${action}" -- ${tribute_files}
+            done <<< "${rule_actions[$rule]}"
+          fi
+        fi
+        
+        # Clear the file's dependency relation from all tribute_files' graph.
+        if [[ ! -z $tribute_files ]]; then
+          for tribute_file in ${tribute_files}; do
+            file_deps[$tribute_file]=`bbb-remove-from-set "${file_deps[$tribute_file]}" "${file}"`
+          done
+        fi
+      done
+    fi
+  done
+  
+  # Abort if no progress was made in this iteration, and unmet files remain.
+  if [[ -z $made_progress ]] && [[ ! -z $next_files ]]; then
+    abort "Circular dependency detected. " \
+          "No further progress is possible." \
+          "The following files remain unprocessed:" \
+          "  ${next_files}"
+  fi
+done
+
+# Print the current working directory.
+info "Done."
