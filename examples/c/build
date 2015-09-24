@@ -10,6 +10,7 @@ src/%.c => src/%.o
 src/%.o => bin/hello_world
 
 # Build the final binary by linking object files.
-bin/hello_world =>
+# TODO: this should be accomplished with a "batch action" on the previous rule.
+bin/hello_world => build-all
   mkdir -p `dirname $INPUT`
   gcc -g -o $INPUT src/*.o
