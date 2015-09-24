@@ -1,0 +1,2 @@
+examples/c/src/*.o
+examples/c/bin/*

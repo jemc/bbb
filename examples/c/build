@@ -1,0 +1,15 @@
+
+# Changes to private headers notify rebuild of source files.
+src/%.h => src/%.c
+
+# Source files build object files.
+src/%.c => src/%.o
+  gcc -g -c -o $1 $INPUT
+
+# Object files notify rebuild of final binary.
+src/%.o => bin/hello_world
+
+# Build the final binary by linking object files.
+bin/hello_world =>
+  mkdir -p `dirname $INPUT`
+  gcc -g -o $INPUT src/*.o

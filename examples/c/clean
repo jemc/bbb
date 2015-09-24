@@ -1,0 +1,11 @@
+
+src/%.o => clean-all
+  rm $INPUT
+
+bin/hello_world => clean-all
+  rm $INPUT
+  rm `dirname $INPUT` -r
+
+# An overall non-file target to make sure all cleans happen every time.
+clean-all =>
+  echo "All clean now!"
