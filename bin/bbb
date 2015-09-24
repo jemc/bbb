@@ -199,7 +199,7 @@ fi
 # For each rule glob, detect and take note of existent files.
 for rule in "${!rule_tributes[@]}"; do
   for file in `eval ls "${rule_globs[$rule]}" 2>/dev/null`; do
-    file_stats[$file]=`stat -c%Y ${file}`
+    file_stats[$file]=`stat -c%Y ${file} 2>/dev/null`
   done
 done
 
