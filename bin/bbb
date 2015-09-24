@@ -161,8 +161,8 @@ for rule in "${!rule_tributes[@]}"; do
   # Expand occurrences of the % character to lazy file-part matchers.
   pattern=`echo "${pattern}" | sed 's~%~\([^/]*?\)~g'`
   
-  # Add an initial anchor to the start
-  pattern='^'"${pattern}"
+  # Add start/end anchors to the start and end of the pattern.
+  pattern='^'"${pattern}"'$'
   
   rule_patterns[$rule]=$pattern
 done
