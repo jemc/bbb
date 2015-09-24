@@ -324,8 +324,6 @@ until [[ -z "${next_files}" ]]; do
             info "Running ${file} => ${tribute_files}"
             
             while read -r action; do
-              echo "bbb>   ${action}"
-              
               INPUT="${file}" \
               OUTPUTS=${tribute_files} \
                 bash -c "${action}" -- ${tribute_files}
