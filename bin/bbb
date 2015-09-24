@@ -307,6 +307,8 @@ until [[ -z "${next_files}" ]]; do
             need_action="true"
           else
             for tribute_file in "${tribute_files}"; do
+              if [[ -z $tribute_file ]]; then continue; fi
+              
               tribute_stat="${file_stats[$tribute_file]}"
               if [[ "${tribute_stat}" == 'new' ]] || [[ "${tribute_stat}" -lt "${stat}" ]]; then
                 need_action="true"
