@@ -149,7 +149,7 @@ while IFS='' read -r line; do
   else
     abort "Unrecognizable line: ${line}"
   fi
-done < "build"
+done < "${bbb_file}"
 
 # For each rule, calculate a regular expression rule pattern from the name.
 for rule in "${!rule_tributes[@]}"; do
