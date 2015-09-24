@@ -296,39 +296,56 @@ until [[ -z "${next_files}" ]]; do
       made_progress="true"
       
       for rule in "${file_rules[$file]}"; do
+        if [[ -z $rule ]]; then continue; fi
+        
         tribute_files="${file_rule_tribute_files[$file,$rule]}"
         
-        if [[ ! -z $rule ]] && [[ ! -z ${rule_actions[$rule]} ]]; then
-          # Determine if any action should be taken, based on the existence and
-          # date modified time of the input file and that of its tribute_files.
-          stat="${file_stats[$file]}"
-          need_action=
-          if [[ "${stat}" == 'new' ]]; then
-            need_action="true"
-          else
-            for tribute_file in "${tribute_files}"; do
-              if [[ -z $tribute_file ]]; then continue; fi
-              
-              tribute_stat="${file_stats[$tribute_file]}"
-              if [[ "${tribute_stat}" == 'new' ]] || [[ "${tribute_stat}" -lt "${stat}" ]]; then
-                need_action="true"
-                break
-              fi
-            done
-          fi
-          
-          # Run any associated actions to generate/update the tribute_files.
-          if [[ -z $need_action ]]; then
-            info "Skipping ${file} => ${tribute_files}"
-          else
-            info "Running ${file} => ${tribute_files}"
+        # Determine if any action should be taken, based on the existence and
+        # date modified time of the input file and that of its tribute_files.
+        stat="${file_stats[$file]}"
+        need_action=
+        if [[ "${stat}" == 'new' ]]; then
+          need_action="true"
+        else
+          for tribute_file in "${tribute_files}"; do
+            if [[ -z $tribute_file ]]; then continue; fi
             
+            tribute_stat="${file_stats[$tribute_file]}"
+            if [[ "${tribute_stat}" == 'new' ]] || [[ "${tribute_stat}" -lt "${stat}" ]]; then
+              need_action="true"
+              break
+            fi
+          done
+        fi
+        
+        # Run any associated actions to generate/update the tribute_files.
+        if [[ -z $need_action ]]; then
+          info "Skipping ${file} => ${tribute_files}"
+        else
+          style_bold=`echo -ne "\033[1m"`
+          style_none=`echo -ne "\033[0m"`
+          info "${style_bold}Building${style_none} ${file} => ${tribute_files}"
+          
+          # Run each action line in sequence.
+          if [[ ! -z ${rule_actions[$rule]} ]]; then
             while read -r action; do
               INPUT="${file}" \
               OUTPUTS=${tribute_files} \
                 bash -c "${action}" -- ${tribute_files}
             done <<< "${rule_actions[$rule]}"
           fi
+          
+          # Touch each of the tribute_files on the filesystem (if it exists)
+          # and update its stored date modified stat in the graph.
+          # This is what makes dependency updates flow through the graph.
+          for tribute_file in "${tribute_files}"; do
+            if [[ -z $tribute_file ]]; then continue; fi
+            
+            if [[ -f "${tribute_file}" ]]; then
+              touch "${tribute_file}"
+              file_stats[$tribute_file]=`stat -c%Y ${file} 2>/dev/null`
+            fi
+          done
         fi
         
         # Clear the file's dependency relation from all tribute_files' graph.
