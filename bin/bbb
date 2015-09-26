@@ -326,26 +326,33 @@ until [[ -z "${next_files}" ]]; do
           style_none=`echo -ne "\033[0m"`
           info "${style_bold}Building${style_none} ${file} => ${tribute_files}"
           
-          # Run each action line in sequence.
+          # Run each action line in sequence, aborting if any of them fail.
+          action_failure=
           if [[ ! -z ${rule_actions[$rule]} ]]; then
-            while read -r action; do
-              INPUT="${file}" \
-              OUTPUTS=${tribute_files} \
-                bash -c "${action}" -- ${tribute_files}
+            while [[ -z $action_failure ]] && read -r action; do
+              if INPUT="${file}" \
+                 OUTPUTS=${tribute_files} \
+                   bash -c "${action}" -- ${tribute_files}
+              then :
+              else action_failure="true"
+              fi
             done <<< "${rule_actions[$rule]}"
           fi
           
-          # Touch each of the tribute_files on the filesystem (if it exists)
+          # Provided there was no action_failure,
+          # touch each of the tribute_files on the filesystem (if it exists)
           # and update its stored date modified stat in the graph.
           # This is what makes dependency updates flow through the graph.
-          for tribute_file in "${tribute_files}"; do
-            if [[ -z $tribute_file ]]; then continue; fi
-            
-            if [[ -f "${tribute_file}" ]]; then
-              touch "${tribute_file}"
-              file_stats[$tribute_file]=`stat -c%Y ${file} 2>/dev/null`
-            fi
-          done
+          if [[ -z $action_failure ]]; then
+            for tribute_file in "${tribute_files}"; do
+              if [[ -z $tribute_file ]]; then continue; fi
+              
+              if [[ -f "${tribute_file}" ]]; then
+                touch "${tribute_file}"
+                file_stats[$tribute_file]=`stat -c%Y ${file} 2>/dev/null`
+              fi
+            done
+          fi
         fi
         
         # Clear the file's dependency relation from all tribute_files' graph.
