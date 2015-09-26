@@ -46,6 +46,17 @@ bbb-remove-from-set() {
   echo "${result}"
 }
 
+# Declare a function that returns the elements from the given list in sorted order.
+bbb-sort-list() {
+  result=""
+  
+  for item in `printf '%s\n' "$@" | sort`; do
+    result=`bbb-set-or-append "${result}" "${item}"`
+  done
+  
+  echo "${result}"
+}
+
 # Declare a function that trims trailing whitespace from the value $1.
 bbb-trim-trailing-space() {
   echo "${1}" | sed 's/ *$//g'
@@ -278,7 +289,7 @@ fi
 
 # Second pass - Process all files in dependency order, performing any actions.
 debug "2-0) File processing:"
-next_files="${!file_stats[@]}"
+next_files=`bbb-sort-list "${!file_stats[@]}"`
 until [[ -z "${next_files}" ]]; do
   files="${next_files}"
   next_files=""
